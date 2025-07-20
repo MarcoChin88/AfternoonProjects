@@ -13,6 +13,18 @@ import numpy as np
 PITCHES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 
+def pitch_to_rgb(pitch: str, _255: bool = False):
+    pitch = pitch.replace('♯', '#')
+    hue = PITCHES.index(pitch) / len(PITCHES)
+
+    rgb = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+
+    if _255:
+        tuple(int(round(c * 255)) for c in rgb)
+
+    return rgb
+
+
 @dataclass
 class ChordType:
     shorthand: str
@@ -172,7 +184,7 @@ if __name__ == "__main__":
     ])
 
     cp3 = cycle(
-        Chord.from_name(_.strip())
+        Chord.from_name(_.strip(), octave=4)
         for _ in '| Am7 | D7 | Bm7 | E7 |'.split('|')
         if _.strip()
     )
@@ -187,11 +199,9 @@ if __name__ == "__main__":
         if _.strip()
     )
 
-    for n in cycle(get_notes('C3', 'C4')):
-        n.play_tone(duration=0.75)
-
-
-
-    # for c1, c2 in zip(cp5, cp4):
-    #     c1.play_chord(duration=note_dur/2)
-    #     c2.play_chord(duration=note_dur/2)
+    # for n in cycle(get_notes('C3', 'C4')):
+    #     n.play_tone(duration=0.75)
+    #
+    note_dur = 2
+    for c in cp4:
+        c.play_chord(duration=note_dur)

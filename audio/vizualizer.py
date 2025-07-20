@@ -1,22 +1,14 @@
-import time
-from collections import deque
-from dataclasses import dataclass
-from functools import partial
 from pprint import pprint
-from typing import Callable
 
 import librosa
 import numpy as np
-import scipy
 import sounddevice as sd
-import soundfile as sf
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Slider
-from scipy.ndimage import median_filter
 from scipy.signal import find_peaks
 
-from notes import get_notes, Note
+from notes import get_notes, Note, pitch_to_rgb
 
 
 def normalize(arr):
@@ -83,26 +75,17 @@ class Viz:
     def __init__(
             self,
             figsize=(14, 8),
-            min_note: str = 'C1',
-            max_note: str = 'C7',
 
     ):
-        self.notes: list[Note] = get_notes(min_note=min_note, max_note=max_note)
-        self.num_notes: int = len(self.notes)
-
-        self.fig, (self.wave_ax, self.fft_ax) = plt.subplots(
-            nrows=2,
-            figsize=figsize
-        )
-        plt.tight_layout()
+        self.figsize = figsize
 
         self.recorder: Recorder = Recorder()
 
-    def display(self, callback_fn):
+    def display(self, fig, callback_fn):
         with self.recorder.get_input_stream():
             interval_ms = self.recorder.frame_dur_sec * 1000
             ani = FuncAnimation(
-                self.fig,
+                fig,
                 callback_fn,
                 interval=interval_ms,
                 blit=True,
@@ -110,11 +93,84 @@ class Viz:
             )
             plt.show()
 
+    def viz_pitch_wheel(
+            self,
+            min_note: str = 'C1',
+            max_note: str = 'C7',
+    ):
+        fig, ax = plt.subplots(
+            figsize=self.figsize
+        )
+        plt.tight_layout()
+
+        notes: list[Note] = get_notes(
+            min_note=min_note,
+            max_note=max_note
+        )
+        num_notes: int = len(notes)
+        pitches = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
+
+        bars = ax.bar(
+            np.arange(12),
+            np.zeros(12),
+        )
+
+        ax.set_xticks(np.arange(12))
+        ax.set_xticklabels(pitches, rotation=90)
+        ax.set_ylim(0, 5)
+
+        thresh = 0.5
+
+        def update_fig(frame):
+            y = self.recorder.get_buffer(windowed=False)
+
+            h, p = librosa.effects.hpss(y)
+
+            chroma = librosa.feature.chroma_cqt(
+                y=h,
+                fmin=notes[0].freq,
+                threshold=thresh,
+                norm=None
+            ).mean(axis=1)
+
+            extended = np.concatenate(([chroma[-1]], chroma, [chroma[0]]))
+            peaks, props = find_peaks(extended, prominence=0.1)
+            pitch_peak_idxs = peaks[np.argsort(props["prominences"])]
+            pitch_peaks = {
+                pitches[i - 1]: chroma[i - 1]
+                for i in pitch_peak_idxs
+            }
+            pprint(pitch_peaks, width=1)
+
+            ax.set_ylim(0, max(thresh, chroma.max()))
+
+            for i, (bar, v) in enumerate(zip(bars, chroma)):
+                pitch = pitches[i]
+
+                bar.set_y(0)
+                bar.set_height(v)
+                bar.set_color(pitch_to_rgb(pitch, _255=False))
+
+            return list(bars)
+
+        self.display(fig, update_fig)
+
     def viz_wave(
             self,
             waveform_alpha: float = 0.35,
-            fft_alpha: float = 0.35
+            fft_alpha: float = 0.35,
+            min_note: str = 'C1',
+            max_note: str = 'C7',
     ):
+        fig, (wave_ax, fft_ax) = plt.subplots(
+            nrows=2,
+            figsize=self.figsize
+        )
+        plt.tight_layout()
+
+        notes: list[Note] = get_notes(min_note=min_note, max_note=max_note)
+        num_notes: int = len(notes)
+
         # Make room for sliders
         plt.subplots_adjust(right=0.75)
         wv_slider_ax = plt.axes([0.8, 0.25, 0.03, 0.65])  # [left, bottom, width, height]
@@ -142,20 +198,20 @@ class Viz:
         t_x_axis = np.arange(self.recorder.buffer_size) / self.recorder.sample_rate
         prev_waveform = np.zeros_like(t_x_axis)
 
-        waveform, = self.wave_ax.plot(
+        waveform, = wave_ax.plot(
             t_x_axis,
             prev_waveform
         )
-        self.wave_ax.set_ylim(-1, 1)
-        self.wave_ax.set_xlim(0, self.recorder.buffer_dur_sec)
+        wave_ax.set_ylim(-1, 1)
+        wave_ax.set_xlim(0, self.recorder.buffer_dur_sec)
 
         # FFT
-        note_freqs = [_.freq for _ in self.notes]
+        note_freqs = [_.freq for _ in notes]
         bin_edges = get_freq_bin_edges(freqs=note_freqs)
         bin_widths = np.diff(bin_edges) * 0.7
         prev_fft = np.zeros_like(note_freqs)
 
-        fft = self.fft_ax.bar(
+        fft = fft_ax.bar(
             note_freqs,
             prev_fft,
             width=bin_widths,
@@ -163,14 +219,14 @@ class Viz:
             color='purple',
             alpha=1
         )
-        self.fft_ax.set_xscale('log')
-        self.fft_ax.set_xlim(bin_edges[0], bin_edges[-1])
-        self.fft_ax.set_xticks(note_freqs)
-        note_names = [_.note_name for _ in self.notes]
-        self.fft_ax.set_xticklabels(note_names, rotation=90)
-        self.fft_ax.set_ylim(-1, 1)
+        fft_ax.set_xscale('log')
+        fft_ax.set_xlim(bin_edges[0], bin_edges[-1])
+        fft_ax.set_xticks(note_freqs)
+        note_names = [_.note_name for _ in notes]
+        fft_ax.set_xticklabels(note_names, rotation=90)
+        fft_ax.set_ylim(-1, 1)
 
-        self.fft_ax.set_facecolor('black')
+        fft_ax.set_facecolor('black')
 
         def update_waveform(_y, _wv_alpha):
             # Waveform
@@ -193,7 +249,7 @@ class Viz:
                 librosa.hybrid_cqt(
                     y_harm,
                     fmin=note_freqs[0],
-                    n_bins=self.num_notes,
+                    n_bins=num_notes,
                     bins_per_octave=12,
                     pad_mode='reflect',
                     tuning=-12
@@ -209,7 +265,7 @@ class Viz:
             cqt[cqt < 1e-4] = 0
 
             strength = 5.0
-            x = np.arange(self.num_notes)
+            x = np.arange(num_notes)
             x_norm = (x - x.min()) / (x.max() - x.min())  # normalize to [0, 1]
             exp_curve = np.exp(strength * x_norm)
             expo = np.maximum(1e-9, (exp_curve - 1) / (np.exp(strength) - 1))
@@ -233,7 +289,7 @@ class Viz:
             for p in top_n_peaks:
                 peak_value = max(cqt[p], 0.3)
 
-                peak_decay = peak_value * decay_rate ** np.abs(np.arange(self.num_notes) - p)
+                peak_decay = peak_value * decay_rate ** np.abs(np.arange(num_notes) - p)
                 peak_decay[p] = peak_value
                 peaks_mask[:] = np.maximum(peaks_mask, peak_decay)
 
@@ -265,7 +321,7 @@ class Viz:
 
             return [waveform] + list(fft)
 
-        self.display(update_fig)
+        self.display(fig, update_fig)
 
 
 def main():
